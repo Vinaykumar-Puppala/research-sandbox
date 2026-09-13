@@ -1,217 +1,359 @@
 import json
-import sqlite3
+import os
+import threading
 import time
-from dataclasses import dataclass
-from typing import Callable
+from typing import Any, List, Optional, TypedDict
 
-import requests
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 
-
-@dataclass
-class AgentState:
-    iteration: int = 0
-    max_iterations: int = 8
-    paused: bool = False
+from data_tools import TOOLS, openai_tool_schemas
+from db import Database
+from local_model import call_local_model
 
 
-class SQLiteTools:
-    def __init__(self, db_path: str, tables: list[str], on_event: Callable):
-        self.db_path = db_path
-        self.tables = tables
-        self.on_event = on_event
+SYSTEM_PROMPT = """
+You are an autonomous organizational data discovery agent.
 
-    def schema(self):
-        result = {}
-        with sqlite3.connect(self.db_path) as con:
-            for table in self.tables:
-                cols = con.execute(f'PRAGMA table_info("{table}")').fetchall()
-                result[table] = [
-                    {"name": c[1], "type": c[2], "nullable": not bool(c[3])}
-                    for c in cols
-                ]
-        self.on_event("TOOL", "Inspected schemas for selected tables.")
-        return result
+Your objective is to discover meaningful, non-obvious, evidence-backed
+patterns from selected organizational data.
 
-    def profile(self, table: str):
-        with sqlite3.connect(self.db_path) as con:
-            count = con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-            sample = con.execute(f'SELECT * FROM "{table}" LIMIT 5').fetchall()
-            columns = [x[1] for x in con.execute(f'PRAGMA table_info("{table}")').fetchall()]
+Do NOT use predefined personas or fixed business workflows. Do not force
+the investigation into CEO, Product, Security, Employee, Customer,
+Operations, Finance, Compliance, or Engineering categories.
 
-        result = {
-            "table": table,
-            "row_count": count,
-            "columns": columns,
-            "sample": [dict(zip(columns, row)) for row in sample],
-        }
-        self.on_event("TOOL", f"Profiled '{table}': {count:,} rows.")
-        return result
+One explorer agent must dynamically determine what to investigate next.
 
-    def aggregate_numeric(self, table: str, column: str):
-        # Identifier names come only from PRAGMA metadata, not arbitrary user input.
-        with sqlite3.connect(self.db_path) as con:
-            row = con.execute(
-                f'SELECT MIN("{column}"), MAX("{column}"), AVG("{column}") FROM "{table}"'
-            ).fetchone()
-        result = {"table": table, "column": column, "min": row[0], "max": row[1], "avg": row[2]}
-        self.on_event("TOOL", f"Calculated numeric summary for {table}.{column}.")
-        return result
+LOOP:
+OBSERVE
+-> identify UNKNOWN / interesting pattern
+-> form HYPOTHESIS
+-> choose highest-value next investigation
+-> USE TOOL
+-> gather EVIDENCE
+-> VALIDATE / REJECT
+-> update understanding
+-> continue or STOP
 
+Explore when justified:
+- distributions
+- concentrations
+- unusual segments
+- temporal patterns when time fields exist
+- repeated activity
+- duplicated workflows
+- cross-table relationships
+- anomalies
+- data quality gaps
+- adoption patterns
+- operational bottlenecks
+- hidden dependencies
+- unexpected correlations
+- meaningful exceptions
+- emerging patterns
 
-class LocalModel:
-    def __init__(self, url: str, model_name: str):
-        self.url = url
-        self.model_name = model_name
+Do not call a correlation meaningful merely because it is large.
+Validate plausible relationships with additional evidence.
 
-    def ask(self, system: str, user: str) -> str:
-        payload = {
-            "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.2,
-        }
-        response = requests.post(self.url, json=payload, timeout=180)
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+Cross-table rule:
+inspect schemas first and infer relationships from actual data. Never assume
+a join merely because table names appear related.
 
+Evidence rule:
+Every strong discovery must be supported by actual tool output.
+Never invent values, records, causes, or relationships.
+Separate observation from interpretation.
 
-class DiscoveryAgent:
-    """
-    V1 autonomous explorer.
+Human steering:
+Human input is a hypothesis/hunch. Validate it independently.
 
-    It is deliberately NOT given CEO/CISO/product workflows.
-    The model decides what question to investigate next from available evidence.
-    """
+Stopping:
+Stop when discoveries are sufficiently validated, remaining investigation
+has low expected information value, useful data is exhausted, or the budget
+is reached.
 
-    SYSTEM = """
-You are an autonomous organizational data discovery researcher.
+Observable events can expose:
+OBSERVE, HYPOTHESIS, TOOL, QUERY, EVIDENCE, VALIDATION, DISCOVERY, DECISION,
+HUMAN, STOP.
 
-Your objective is to discover useful, non-obvious, evidence-backed patterns in
-the supplied organizational data.
+Never expose private chain-of-thought.
 
-Do NOT assume predefined personas, business workflows, or hypotheses.
-Do NOT invent facts.
+Final synthesis:
+Return up to five strongest discoveries using:
 
-At each iteration:
-1. Review the available evidence.
-2. Identify the most valuable unanswered question.
-3. Request the next analysis through the available tool plan.
-4. Compare the result with previous evidence.
-5. Produce a candidate discovery only when evidence supports it.
-6. Decide what should be investigated next.
+DISCOVERY:
+title: ...
+summary: ...
+significance: ...
+confidence: 0.0-1.0
+evidence: ...
 
-Prioritize discoveries involving:
-- repeated workflows and user behavior
-- process bottlenecks or duplication
-- relationships between systems/tables
-- unusual patterns or outliers
-- high-value or underused capabilities
-- opportunities to automate
-- data quality problems
-- security/privacy-relevant anomalies when evidence supports them
-- dependencies and cross-system behavior
-
-Return JSON only:
-{
-  "next_action": "profile" | "numeric_summary" | "stop",
-  "table": "...",
-  "column": "...",
-  "hypothesis": "...",
-  "discovery": {
-      "title": "...",
-      "summary": "...",
-      "evidence": [],
-      "confidence": 0.0
-  }
-}
-
-If more evidence is needed, discovery may be null.
+If evidence is insufficient, return NO_STRONG_DISCOVERY.
 """
 
-    def __init__(self, db_path, tables, model_url, model_name, on_event):
-        self.tools = SQLiteTools(db_path, tables, on_event)
-        self.model = LocalModel(model_url, model_name)
-        self.tables = tables
-        self.on_event = on_event
-        self.state = AgentState()
-        self.evidence = []
-        self.discoveries = []
 
-    def _ask(self, context):
-        self.on_event("AGENT", "Evaluating evidence and selecting the next investigation.")
-        raw = self.model.ask(self.SYSTEM, json.dumps(context, default=str))
-        raw = raw.strip().removeprefix("```json").removesuffix("```").strip()
-        return json.loads(raw)
+class State(TypedDict, total=False):
+    messages: List[Any]
+    iteration: int
+    max_iterations: int
+    max_tool_calls: int
+    tool_calls_used: int
+    run_id: str
+    tables: List[str]
+    objective: str
+    status: str
+    final_text: str
 
-    def run(self, initial_steering=""):
-        self.on_event("START", f"Autonomous investigation started on {len(self.tables)} table(s).")
 
-        schemas = self.tools.schema()
-        profiles = [self.tools.profile(t) for t in self.tables]
+class Controller:
+    def __init__(self):
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.stop_event = threading.Event()
 
-        self.evidence.extend([{"type": "schema", "value": schemas}])
-        self.evidence.extend([{"type": "profile", "value": p} for p in profiles])
+    def pause(self):
+        self.pause_event.clear()
 
-        if initial_steering:
-            self.on_event("HUMAN", f"Human steering received: {initial_steering}")
+    def resume(self):
+        self.pause_event.set()
 
-        while self.state.iteration < self.state.max_iterations:
-            while getattr(self.state, "paused", False):
-                time.sleep(0.5)
+    def stop(self):
+        self.stop_event.set()
+        self.pause_event.set()
 
-            self.state.iteration += 1
-            self.on_event("LOOP", f"Investigation iteration {self.state.iteration}/{self.state.max_iterations}")
+    def gate(self):
+        while not self.pause_event.is_set():
+            if self.stop_event.is_set():
+                return False
+            time.sleep(0.2)
+        return not self.stop_event.is_set()
 
-            context = {
-                "tables": self.tables,
-                "evidence": self.evidence[-20:],
-                "human_steering": initial_steering,
-                "iteration": self.state.iteration,
+
+class AutonomousDiscovery:
+    def __init__(self, db_path, endpoint, model,
+                 controller=None, max_iterations=12, max_tool_calls=30):
+        os.environ["DISCOVERY_DB"] = db_path
+        self.db = Database(db_path)
+        self.endpoint = endpoint
+        self.model = model
+        self.controller = controller or Controller()
+        self.max_iterations = max_iterations
+        self.max_tool_calls = max_tool_calls
+        self.tool_schemas = openai_tool_schemas()
+        self.graph = self._build_graph()
+
+    def log(self, run_id, event_type, message, payload=None):
+        self.db.log_event(run_id, event_type, message, payload)
+
+    def _build_graph(self):
+        workflow = StateGraph(State)
+        workflow.add_node("decide", self.decide)
+        workflow.add_node("tools", ToolNode(TOOLS))
+        workflow.add_node("observe", self.observe_tool_result)
+        workflow.add_node("finish", self.finish)
+
+        workflow.add_edge(START, "decide")
+        workflow.add_conditional_edges(
+            "decide", self.route,
+            {"tools": "tools", "finish": "finish"}
+        )
+        workflow.add_edge("tools", "observe")
+        workflow.add_edge("observe", "decide")
+        workflow.add_edge("finish", END)
+        return workflow.compile()
+
+    def decide(self, state):
+        run_id = state["run_id"]
+
+        if not self.controller.gate():
+            return {"status": "stopped"}
+
+        iteration = state.get("iteration", 0) + 1
+        if iteration > state["max_iterations"]:
+            self.log(run_id, "STOP", "Maximum investigation iterations reached.")
+            return {"status": "finished", "iteration": iteration}
+
+        if state.get("tool_calls_used", 0) >= state["max_tool_calls"]:
+            self.log(run_id, "STOP", "Maximum tool-call budget reached.")
+            return {"status": "finished", "iteration": iteration}
+
+        steering = self.db.consume_steering(run_id)
+        new_messages = list(state.get("messages", []))
+        if steering:
+            text = "\n".join(f"HUMAN STEERING: {x}" for x in steering)
+            new_messages.append(HumanMessage(content=text))
+            self.log(run_id, "HUMAN", text)
+
+        context = (
+            f"SELECTED TABLES: {json.dumps(state['tables'])}\n"
+            f"OPEN-ENDED OBJECTIVE: {state['objective']}\n"
+            f"ITERATION: {iteration}/{state['max_iterations']}\n"
+            f"TOOL BUDGET: {state.get('tool_calls_used',0)}/"
+            f"{state['max_tool_calls']}\n"
+            "Continue autonomously. Choose the next highest-value evidence "
+            "gathering action, or finish if evidence is sufficient."
+        )
+        new_messages.append(HumanMessage(content=context))
+
+        self.log(run_id, "OBSERVE", f"Evaluating iteration {iteration}.",
+                 {"tables": state["tables"]})
+
+        ai = call_local_model(
+            [HumanMessage(content=SYSTEM_PROMPT)] + new_messages,
+            tools=self.tool_schemas,
+            endpoint=self.endpoint,
+            model=self.model,
+        )
+
+        if ai.tool_calls:
+            count = len(ai.tool_calls)
+            names = [x["name"] for x in ai.tool_calls]
+            self.log(run_id, "TOOL",
+                     f"Selected: {', '.join(names)}",
+                     {"tool_calls": [
+                         {"name": x["name"], "args": x.get("args", {})}
+                         for x in ai.tool_calls
+                     ]})
+            return {
+                "messages": new_messages + [ai],
+                "iteration": iteration,
+                "tool_calls_used": state.get("tool_calls_used", 0) + count
             }
 
+        if ai.content:
+            self.log(run_id, "DECISION", ai.content[:4000])
+        return {
+            "messages": new_messages + [ai],
+            "iteration": iteration,
+            "status": "finished"
+        }
+
+    def route(self, state):
+        if state.get("status") in {"finished", "stopped"}:
+            return "finish"
+        last = state["messages"][-1]
+        if isinstance(last, AIMessage) and last.tool_calls:
+            return "tools"
+        return "finish"
+
+    def observe_tool_result(self, state):
+        run_id = state["run_id"]
+        for message in state["messages"][-20:]:
+            if isinstance(message, ToolMessage):
+                text = str(message.content)
+                event = "QUERY" if "sql" in (message.name or "").lower() else "EVIDENCE"
+                self.log(
+                    run_id, event,
+                    f"{message.name or 'tool'} returned evidence.",
+                    {"preview": text[:5000]}
+                )
+        return {}
+
+    def finish(self, state):
+        run_id = state["run_id"]
+
+        if not self.controller.gate():
+            self.db.update_run(run_id, status="stopped",
+                               iterations=state.get("iteration", 0), finished=True)
+            self.log(run_id, "STOP", "Investigation stopped by user.")
+            return {"status": "stopped"}
+
+        synthesis = list(state["messages"])
+        synthesis.append(HumanMessage(content="""
+Synthesize only from actual tool results above.
+
+Return 0-5 strongest validated discoveries:
+
+DISCOVERY:
+title: ...
+summary: ...
+significance: ...
+confidence: 0.0-1.0
+evidence: ...
+
+Do not invent evidence. If nothing is sufficiently supported:
+NO_STRONG_DISCOVERY
+"""))
+
+        try:
+            ai = call_local_model(
+                [HumanMessage(content=SYSTEM_PROMPT)] + synthesis,
+                tools=None, endpoint=self.endpoint, model=self.model
+            )
+            text = ai.content or "NO_STRONG_DISCOVERY"
+        except Exception as exc:
+            text = f"Synthesis failed: {exc}"
+
+        self.persist_discoveries(run_id, text)
+        status = "stopped" if state.get("status") == "stopped" else "finished"
+        self.db.update_run(run_id, status=status,
+                           iterations=state.get("iteration", 0), finished=True)
+        self.log(run_id, "DISCOVERY", text[:10000])
+        self.log(run_id, "STOP", "Investigation complete.")
+        return {"final_text": text, "status": status}
+
+    def persist_discoveries(self, run_id, text):
+        if "NO_STRONG_DISCOVERY" in text:
+            return
+
+        for block in [x.strip() for x in text.split("DISCOVERY:") if x.strip()][:5]:
+            data = {}
+            for line in block.splitlines():
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    data[key.strip().lower()] = value.strip()
+
+            title = data.get("title", "Untitled discovery")
+            summary = data.get("summary", block[:1200])
+            significance = data.get("significance", "")
             try:
-                decision = self._ask(context)
-            except Exception as exc:
-                self.on_event("ERROR", f"Model response could not be parsed: {exc}")
-                break
+                confidence = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
+            except Exception:
+                confidence = 0.5
 
-            action = decision.get("next_action", "stop")
-            hypothesis = decision.get("hypothesis", "")
-            if hypothesis:
-                self.on_event("HYPOTHESIS", hypothesis)
+            evidence_id = self.db.add_evidence(
+                run_id,
+                f"Validated discovery: {title}",
+                summary,
+                source="validated model synthesis",
+                confidence=confidence,
+            )
+            discovery_id = self.db.add_discovery(
+                run_id, title, summary, significance, confidence, [evidence_id]
+            )
 
-            if action == "stop":
-                self.on_event("DECISION", "Agent decided that additional investigation is unlikely to add enough value.")
-                candidate = decision.get("discovery")
-                if candidate:
-                    self.discoveries.append(candidate)
-                break
+            dataset_node = self.db.add_node(run_id, "dataset", "selected_data")
+            discovery_node = self.db.add_node(
+                run_id, "discovery", title,
+                {"confidence": confidence, "discovery_id": discovery_id}
+            )
+            self.db.add_edge(
+                run_id, dataset_node, discovery_node, "supports",
+                evidence_id=evidence_id
+            )
 
-            table = decision.get("table")
-            if table not in self.tables:
-                self.on_event("WARN", f"Agent selected invalid table '{table}'. Stopping.")
-                break
-
-            if action == "profile":
-                result = self.tools.profile(table)
-                self.evidence.append({"type": "profile", "value": result})
-
-            elif action == "numeric_summary":
-                column = decision.get("column")
-                valid_columns = {c["name"] for c in self.tools.schema()[table]}
-                if column not in valid_columns:
-                    self.on_event("WARN", f"Invalid column '{column}'.")
-                    continue
-                result = self.tools.aggregate_numeric(table, column)
-                self.evidence.append({"type": "numeric_summary", "value": result})
-
-            candidate = decision.get("discovery")
-            if candidate and candidate.get("title"):
-                self.discoveries.append(candidate)
-                self.on_event("DISCOVERY", candidate["title"])
-
-        self.on_event("END", "Explorer finished.")
-        return {"discoveries": self.discoveries, "evidence": self.evidence}
+    def run(self, tables, objective):
+        run_id = self.db.start_run(tables, objective)
+        state = {
+            "messages": [HumanMessage(content=(
+                "Start a fresh autonomous investigation. Explore the selected "
+                "tables and discover meaningful evidence-backed patterns."
+            ))],
+            "iteration": 0,
+            "max_iterations": self.max_iterations,
+            "max_tool_calls": self.max_tool_calls,
+            "tool_calls_used": 0,
+            "run_id": run_id,
+            "tables": tables,
+            "objective": objective,
+            "status": "running",
+        }
+        try:
+            result = self.graph.invoke(state)
+            return run_id, result
+        except Exception as exc:
+            self.db.update_run(run_id, status="error",
+                               iterations=state["iteration"], finished=True)
+            self.log(run_id, "ERROR", str(exc))
+            raise
