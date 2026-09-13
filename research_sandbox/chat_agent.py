@@ -3,6 +3,7 @@ from langgraph.prebuilt import ToolNode
 
 from data_tools import TOOLS, openai_tool_schemas
 from local_model import call_local_model
+from skill_loader import load_skill_prompts, load_skill_tools
 
 
 SYSTEM = """
@@ -16,21 +17,38 @@ Clearly separate observed facts from interpretation.
 """
 
 
+def _skill_schemas(tools):
+    return [{
+        "type": "function",
+        "function": {
+            "name": t.name,
+            "description": t.description,
+            "parameters": t.args_schema.model_json_schema(),
+        }
+    } for t in tools]
+
+
 def chat_with_data(question, tables, endpoint, model, history=None, api_key=None):
+    skill_tools = load_skill_tools()
+    skill_context = load_skill_prompts()
+
+    system_text = SYSTEM + ("\n\n" + skill_context if skill_context else "")
+    all_tools_lc = TOOLS + skill_tools
+    all_tools_oai = openai_tool_schemas() + _skill_schemas(skill_tools)
+
     messages = [
-        HumanMessage(content=SYSTEM),
+        HumanMessage(content=system_text),
         HumanMessage(content=f"SELECTED TABLES: {tables}")
     ]
     if history:
         messages.extend(history)
     messages.append(HumanMessage(content=question))
 
-    tools = openai_tool_schemas()
-    tool_node = ToolNode(TOOLS)
+    tool_node = ToolNode(all_tools_lc)
 
     for _ in range(8):
         ai = call_local_model(
-            messages, tools=tools, endpoint=endpoint,
+            messages, tools=all_tools_oai, endpoint=endpoint,
             model=model, temperature=0.1, api_key=api_key,
         )
         messages.append(ai)

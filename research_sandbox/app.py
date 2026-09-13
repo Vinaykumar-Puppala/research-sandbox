@@ -12,6 +12,7 @@ from db import Database
 from discovery_agent import AutonomousDiscovery, Controller
 from graph_viz import build_graph_html
 from ingestion import FileIngestionService
+from skill_loader import count_active
 
 
 st.set_page_config(
@@ -56,6 +57,15 @@ with st.sidebar:
         type="password",
         help="Bearer token for LiteLLM or any endpoint that requires auth. Leave blank for llama.cpp with no auth.",
     ) or None
+
+    st.divider()
+    st.header("Skills")
+    n_tools, n_prompts = count_active()
+    if n_tools or n_prompts:
+        st.success(f"{n_tools} tool skill(s) · {n_prompts} instruction(s) active")
+    else:
+        st.caption("No skills loaded. Drop .py or .md files into research_sandbox/skills/")
+    st.caption("Active on: Chat With My Data")
 
 db = Database(db_path)
 ingestor = FileIngestionService()
