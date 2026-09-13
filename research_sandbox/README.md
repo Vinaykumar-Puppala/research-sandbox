@@ -1,68 +1,111 @@
-# Autonomous Organizational Data Discovery — V1
+# Autonomous Organizational Discovery — Final V1+V2
 
-A local prototype for experimenting with an autonomous discovery agent over SQLite.
+A complete local prototype combining the V1 autonomous explorer and V2
+evidence/discovery platform.
 
-## Architecture
+## What is included
 
-Streamlit UI
-    |
-    +-- SQLite database/table selection
-    |
-    +-- Human steering input
-    |
-    +-- Start / Pause / Resume
-    |
-Python DiscoveryAgent
-    |
-    +-- SQLiteTools
-    +-- LocalModel
-    |
-localhost:8000/v1/chat/completions
+### Data
+- CSV
+- Excel XLSX/XLS, including sheet selection
+- Parquet
+- JSON
+- JSONL / NDJSON
+- Multiple tables/datasets in one investigation
+- SQLite normalization
 
-The model receives evidence and decides what to investigate next. There are no
-predefined CEO/CISO/product sub-agents in V1.
+### Autonomous exploration
+- One autonomous explorer agent
+- Open-ended objective
+- Dynamic next-action selection
+- Cyclic LangGraph execution
+- Generic data-analysis tools
+- Cross-table investigation
+- Human steering
+- Pause / resume / stop
+- Investigation budgets
+- Explicit stopping criteria
+
+### Analysis tools
+- Schema inspection
+- Table profiling
+- Read-only SQL
+- Descriptive statistics
+- Value distributions
+- Correlation analysis
+- Cross-table JOIN exploration
+
+### Knowledge layer
+- Persistent activity events
+- Persistent evidence
+- Persistent discoveries
+- Lightweight discovery graph
+- Discovery Workspace
+
+### Conversational layer
+- Chat With My Data
+- Selected-table grounding
+- Tool-assisted answers
+- Read-only analysis
+
+## Core architecture
+
+Streamlit
+  |
+  +--> Ingestion --> SQLite data tables
+  |
+  +--> Autonomous Discovery
+  |       |
+  |       +--> LangGraph
+  |       +--> Local LLM
+  |       +--> Generic Data Tools
+  |       +--> Evidence Store
+  |       +--> Discovery Store
+  |       +--> Discovery Graph
+  |
+  +--> Discovery Workspace
+  |
+  +--> Chat With My Data
+
+The LangGraph execution graph is intentionally small:
+
+START -> DECIDE -> TOOLS -> OBSERVE -> DECIDE -> ... -> FINISH
+
+The graph is not the organization's workflow. The LLM dynamically chooses
+what to investigate next.
+
+## Local model
+
+Default:
+http://localhost:8000/v1/chat/completions
+
+Environment variables:
+- MODEL_ENDPOINT
+- MODEL_NAME
+- DISCOVERY_DB_PATH
+
+The local endpoint should support OpenAI-compatible tool/function calling.
 
 ## Run
 
-Create a virtual environment, then:
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-    pip install -r requirements.txt
-    streamlit run app.py
+## Prototype safety
 
-Put a SQLite database at:
+SQL is restricted to read-only SELECT/WITH/PRAGMA operations and result
+sizes are capped. This is a local prototype, not a production multi-tenant
+security boundary. Production should add authentication, authorization,
+tenant isolation, query governance, resource quotas, durable checkpointing,
+and audit controls.
 
-    data/workspace.db
+## Design principle
 
-or use the CSV uploader to create a table.
+Do not hard-code CEO/Product/Security/Employee/Customer/etc. as autonomous
+agents or workflows.
 
-The local model endpoint is expected to be OpenAI-compatible:
+Those are future lenses over the common evidence/discovery graph.
 
-    http://localhost:8000/v1/chat/completions
-
-Change the URL and model name in the UI if needed.
-
-## Important V1 design choice
-
-The console displays observable events:
-- TOOL
-- HYPOTHESIS
-- DECISION
-- DISCOVERY
-- HUMAN
-- LOOP
-
-It does not display private chain-of-thought. This is intentional: the useful
-transparency is what data was inspected, what hypothesis was selected, what
-tool was called, what evidence was found, and what discovery was produced.
-
-## Next evolution
-
-V2 can add:
-- discovery memory
-- evidence graph
-- relationship discovery across tables
-- richer analytics/data-interpreter skills
-- persona lenses (CEO, product, security, employee, customer, operations, etc.)
-- a separate "Chat with My Data" page
-- human steering while an investigation is running
-- persistent investigation history
+The organizational story should emerge from the data.

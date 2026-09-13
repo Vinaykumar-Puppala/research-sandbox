@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "research-sandbox"
+version = "0.1.0"
+description = "Autonomous Organizational Discovery — local prototype combining autonomous data exploration with an evidence/discovery platform"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.40",
+    "pandas>=2.2",
+    "requests>=2.32",
+    "openpyxl>=3.1",
+    "pyarrow>=17.0",
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["research_sandbox"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
