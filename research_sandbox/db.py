@@ -137,8 +137,9 @@ class Database:
                 "SELECT * FROM ingestion_registry ORDER BY created_at DESC"
             ).fetchall()]
 
-    def start_run(self, tables, objective):
-        run_id = str(uuid.uuid4())
+    def start_run(self, tables, objective, run_id: str | None = None):
+        if run_id is None:
+            run_id = str(uuid.uuid4())
         with self._lock, self.connect() as c:
             c.execute(
                 """INSERT INTO investigation_runs

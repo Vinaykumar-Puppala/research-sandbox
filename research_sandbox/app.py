@@ -1,6 +1,7 @@
 import os
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -148,6 +149,10 @@ with discover_tab:
             controller = Controller()
             st.session_state.controller = controller
 
+            pre_run_id = str(uuid.uuid4())
+            db.start_run(selected_tables, objective, run_id=pre_run_id)
+            st.session_state.run_id = pre_run_id
+
             def worker():
                 try:
                     agent = AutonomousDiscovery(
@@ -158,15 +163,15 @@ with discover_tab:
                         max_iterations=max_iterations,
                         max_tool_calls=max_tool_calls
                     )
-                    run_id, _ = agent.run(selected_tables, objective)
-                    st.session_state.run_id = run_id
-                except Exception:
-                    pass
+                    agent.run(selected_tables, objective, run_id=pre_run_id)
+                except Exception as exc:
+                    db.log_event(pre_run_id, "ERROR", f"Investigation failed: {exc}")
+                    db.update_run(pre_run_id, status="error", finished=True)
 
             thread = threading.Thread(target=worker, daemon=True)
             st.session_state.run_thread = thread
             thread.start()
-            st.success("Investigation started. Use refresh to see new events.")
+            st.success("Investigation started. Refresh to see activity.")
 
         if col2.button("⏸ Pause", use_container_width=True):
             st.session_state.controller.pause()

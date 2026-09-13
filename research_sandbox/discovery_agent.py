@@ -333,8 +333,8 @@ NO_STRONG_DISCOVERY
                 evidence_id=evidence_id
             )
 
-    def run(self, tables, objective):
-        run_id = self.db.start_run(tables, objective)
+    def run(self, tables, objective, run_id: str | None = None):
+        run_id = self.db.start_run(tables, objective, run_id=run_id)
         state = {
             "messages": [HumanMessage(content=(
                 "Start a fresh autonomous investigation. Explore the selected "
