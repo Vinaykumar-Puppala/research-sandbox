@@ -50,6 +50,12 @@ with st.sidebar:
     model_name = st.text_input("Model name", DEFAULT_MODEL)
     max_iterations = st.slider("Max investigation iterations", 3, 30, 12)
     max_tool_calls = st.slider("Max tool calls", 5, 100, 30)
+    api_key = st.text_input(
+        "API token (optional)",
+        value=os.getenv("MODEL_API_KEY", ""),
+        type="password",
+        help="Bearer token for LiteLLM or any endpoint that requires auth. Leave blank for llama.cpp with no auth.",
+    ) or None
 
 db = Database(db_path)
 ingestor = FileIngestionService()
@@ -161,7 +167,8 @@ with discover_tab:
                         model=model_name,
                         controller=controller,
                         max_iterations=max_iterations,
-                        max_tool_calls=max_tool_calls
+                        max_tool_calls=max_tool_calls,
+                        api_key=api_key,
                     )
                     agent.run(selected_tables, objective, run_id=pre_run_id)
                 except Exception as exc:
@@ -312,7 +319,8 @@ with chat_tab:
                             tables=chat_tables,
                             endpoint=endpoint,
                             model=model_name,
-                            history=[]
+                            history=[],
+                            api_key=api_key,
                         )
                     st.markdown(answer)
                     st.session_state.chat_history.append(

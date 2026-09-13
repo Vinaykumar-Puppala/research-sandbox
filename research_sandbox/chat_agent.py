@@ -16,7 +16,7 @@ Clearly separate observed facts from interpretation.
 """
 
 
-def chat_with_data(question, tables, endpoint, model, history=None):
+def chat_with_data(question, tables, endpoint, model, history=None, api_key=None):
     messages = [
         HumanMessage(content=SYSTEM),
         HumanMessage(content=f"SELECTED TABLES: {tables}")
@@ -31,7 +31,7 @@ def chat_with_data(question, tables, endpoint, model, history=None):
     for _ in range(8):
         ai = call_local_model(
             messages, tools=tools, endpoint=endpoint,
-            model=model, temperature=0.1
+            model=model, temperature=0.1, api_key=api_key,
         )
         messages.append(ai)
         if not ai.tool_calls:
