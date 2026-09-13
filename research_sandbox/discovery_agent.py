@@ -132,11 +132,13 @@ class Controller:
 
 class AutonomousDiscovery:
     def __init__(self, db_path, endpoint, model,
-                 controller=None, max_iterations=12, max_tool_calls=30):
+                 controller=None, max_iterations=12, max_tool_calls=30,
+                 api_key=None):
         os.environ["DISCOVERY_DB"] = db_path
         self.db = Database(db_path)
         self.endpoint = endpoint
         self.model = model
+        self.api_key = api_key
         self.controller = controller or Controller()
         self.max_iterations = max_iterations
         self.max_tool_calls = max_tool_calls
@@ -204,6 +206,7 @@ class AutonomousDiscovery:
             tools=self.tool_schemas,
             endpoint=self.endpoint,
             model=self.model,
+            api_key=self.api_key,
         )
 
         if ai.tool_calls:
@@ -279,7 +282,8 @@ NO_STRONG_DISCOVERY
         try:
             ai = call_local_model(
                 [HumanMessage(content=SYSTEM_PROMPT)] + synthesis,
-                tools=None, endpoint=self.endpoint, model=self.model
+                tools=None, endpoint=self.endpoint, model=self.model,
+                api_key=self.api_key,
             )
             text = ai.content or "NO_STRONG_DISCOVERY"
         except Exception as exc:
@@ -333,8 +337,8 @@ NO_STRONG_DISCOVERY
                 evidence_id=evidence_id
             )
 
-    def run(self, tables, objective):
-        run_id = self.db.start_run(tables, objective)
+    def run(self, tables, objective, run_id: str | None = None):
+        run_id = self.db.start_run(tables, objective, run_id=run_id)
         state = {
             "messages": [HumanMessage(content=(
                 "Start a fresh autonomous investigation. Explore the selected "

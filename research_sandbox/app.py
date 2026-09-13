@@ -1,6 +1,7 @@
 import os
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -11,6 +12,7 @@ from db import Database
 from discovery_agent import AutonomousDiscovery, Controller
 from graph_viz import build_graph_html
 from ingestion import FileIngestionService
+from skill_loader import count_active
 
 
 st.set_page_config(
@@ -49,6 +51,21 @@ with st.sidebar:
     model_name = st.text_input("Model name", DEFAULT_MODEL)
     max_iterations = st.slider("Max investigation iterations", 3, 30, 12)
     max_tool_calls = st.slider("Max tool calls", 5, 100, 30)
+    api_key = st.text_input(
+        "API token (optional)",
+        value=os.getenv("MODEL_API_KEY", ""),
+        type="password",
+        help="Bearer token for LiteLLM or any endpoint that requires auth. Leave blank for llama.cpp with no auth.",
+    ) or None
+
+    st.divider()
+    st.header("Skills")
+    n_tools, n_prompts = count_active()
+    if n_tools or n_prompts:
+        st.success(f"{n_tools} tool skill(s) · {n_prompts} instruction(s) active")
+    else:
+        st.caption("No skills loaded. Drop .py or .md files into research_sandbox/skills/")
+    st.caption("Active on: Chat With My Data")
 
 db = Database(db_path)
 ingestor = FileIngestionService()
@@ -148,6 +165,10 @@ with discover_tab:
             controller = Controller()
             st.session_state.controller = controller
 
+            pre_run_id = str(uuid.uuid4())
+            db.start_run(selected_tables, objective, run_id=pre_run_id)
+            st.session_state.run_id = pre_run_id
+
             def worker():
                 try:
                     agent = AutonomousDiscovery(
@@ -156,17 +177,18 @@ with discover_tab:
                         model=model_name,
                         controller=controller,
                         max_iterations=max_iterations,
-                        max_tool_calls=max_tool_calls
+                        max_tool_calls=max_tool_calls,
+                        api_key=api_key,
                     )
-                    run_id, _ = agent.run(selected_tables, objective)
-                    st.session_state.run_id = run_id
-                except Exception:
-                    pass
+                    agent.run(selected_tables, objective, run_id=pre_run_id)
+                except Exception as exc:
+                    db.log_event(pre_run_id, "ERROR", f"Investigation failed: {exc}")
+                    db.update_run(pre_run_id, status="error", finished=True)
 
             thread = threading.Thread(target=worker, daemon=True)
             st.session_state.run_thread = thread
             thread.start()
-            st.success("Investigation started. Use refresh to see new events.")
+            st.success("Investigation started. Refresh to see activity.")
 
         if col2.button("⏸ Pause", use_container_width=True):
             st.session_state.controller.pause()
@@ -307,7 +329,8 @@ with chat_tab:
                             tables=chat_tables,
                             endpoint=endpoint,
                             model=model_name,
-                            history=[]
+                            history=[],
+                            api_key=api_key,
                         )
                     st.markdown(answer)
                     st.session_state.chat_history.append(
