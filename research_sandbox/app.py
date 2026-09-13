@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import threading
@@ -66,6 +67,12 @@ with st.sidebar:
     else:
         st.caption("No skills loaded. Drop .py or .md files into research_sandbox/skills/")
     st.caption("Active on: Chat With My Data")
+
+    st.divider()
+    show_raw = st.checkbox(
+        "Show raw model response",
+        help="Display the unparsed text the model returned. Use this when answers look wrong or contain tool-call markup.",
+    )
 
 db = Database(db_path)
 ingestor = FileIngestionService()
@@ -324,7 +331,7 @@ with chat_tab:
             with st.chat_message("assistant"):
                 try:
                     with st.spinner("Analyzing data..."):
-                        answer, _ = chat_with_data(
+                        answer, trace = chat_with_data(
                             question=question,
                             tables=chat_tables,
                             endpoint=endpoint,
@@ -333,6 +340,17 @@ with chat_tab:
                             api_key=api_key,
                         )
                     st.markdown(answer)
+                    if show_raw:
+                        with st.expander("Raw model response"):
+                            for m in trace:
+                                role = type(m).__name__.replace("Message", "")
+                                body = str(getattr(m, "content", "")) or "(empty)"
+                                calls = getattr(m, "tool_calls", None)
+                                if calls:
+                                    body += "\n\ntool_calls: " + json.dumps(
+                                        [{"name": c["name"], "args": c.get("args", {})}
+                                         for c in calls], indent=2, default=str)
+                                st.code(f"[{role}]\n{body}", language="text")
                     st.session_state.chat_history.append(
                         ("assistant", answer)
                     )

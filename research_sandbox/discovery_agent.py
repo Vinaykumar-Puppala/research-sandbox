@@ -4,7 +4,9 @@ import threading
 import time
 from typing import Any, List, Optional, TypedDict
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage, HumanMessage, SystemMessage, ToolMessage,
+)
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -202,7 +204,7 @@ class AutonomousDiscovery:
                  {"tables": state["tables"]})
 
         ai = call_local_model(
-            [HumanMessage(content=SYSTEM_PROMPT)] + new_messages,
+            [SystemMessage(content=SYSTEM_PROMPT)] + new_messages,
             tools=self.tool_schemas,
             endpoint=self.endpoint,
             model=self.model,
@@ -281,7 +283,7 @@ NO_STRONG_DISCOVERY
 
         try:
             ai = call_local_model(
-                [HumanMessage(content=SYSTEM_PROMPT)] + synthesis,
+                [SystemMessage(content=SYSTEM_PROMPT)] + synthesis,
                 tools=None, endpoint=self.endpoint, model=self.model,
                 api_key=self.api_key,
             )
