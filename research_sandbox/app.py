@@ -4,10 +4,12 @@ import threading
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from chat_agent import chat_with_data
 from db import Database
 from discovery_agent import AutonomousDiscovery, Controller
+from graph_viz import build_graph_html
 from ingestion import FileIngestionService
 
 
@@ -249,11 +251,27 @@ with workspace_tab:
         else:
             st.info("No evidence persisted yet.")
 
-        st.markdown("### Discovery graph")
+        st.markdown("### Knowledge graph")
         if nodes:
-            st.dataframe(nodes, use_container_width=True, hide_index=True)
-        if edges:
-            st.dataframe(edges, use_container_width=True, hide_index=True)
+            graph_html = build_graph_html(nodes, edges, height=600)
+            components.html(graph_html, height=630, scrolling=False)
+            with st.expander("Raw graph tables"):
+                col_n, col_e = st.columns(2)
+                with col_n:
+                    st.caption(f"{len(nodes)} nodes")
+                    st.dataframe(
+                        nodes, use_container_width=True, hide_index=True
+                    )
+                with col_e:
+                    st.caption(f"{len(edges)} edges")
+                    st.dataframe(
+                        edges, use_container_width=True, hide_index=True
+                    )
+        else:
+            st.info(
+                "The knowledge graph will appear here once the investigation "
+                "validates its first discovery."
+            )
 
 
 with chat_tab:
